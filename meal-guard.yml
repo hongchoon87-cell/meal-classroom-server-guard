@@ -1,0 +1,90 @@
+name: Meal classroom server guard
+
+on:
+  schedule:
+    # UTC minute 17 = Korean time minute 17; avoid the busy start of an hour.
+    - cron: '17 * * 10,11 *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'recover uses the project-only secret; health-only checks public service'
+        required: true
+        default: recover
+        type: choice
+        options:
+          - recover
+          - health-only
+
+permissions:
+  contents: read
+
+concurrency:
+  group: meal-project-recovery
+  cancel-in-progress: false
+
+jobs:
+  window:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      active: ${{ steps.window.outputs.active }}
+    steps:
+      - name: Check the Korean-time end date
+        id: window
+        shell: bash
+        run: |
+          cutoff=$(date -u -d '2026-11-30T15:00:00Z' +%s)
+          if [ "$(date -u +%s)" -lt "$cutoff" ]; then
+            echo 'active=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'active=false' >> "$GITHUB_OUTPUT"
+            echo 'Monitoring ended at 2026-11-30 23:59:59 Asia/Seoul.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  guard:
+    needs: window
+    if: needs.window.outputs.active == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Fetch this exact source commit
+        shell: bash
+        run: |
+          git init guard-src
+          git -C guard-src remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git"
+          git -C guard-src fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git -C guard-src checkout --detach FETCH_HEAD
+      - name: Verify the recovery rules
+        working-directory: guard-src
+        run: node --test
+      - name: Check and recover only the configured project
+        working-directory: guard-src
+        env:
+          SUPABASE_RECOVERY_TOKEN: ${{ secrets.SUPABASE_RECOVERY_TOKEN }}
+          GUARD_MODE: ${{ inputs.mode || 'recover' }}
+        shell: bash
+        run: |
+          if [ "$GUARD_MODE" = 'health-only' ]; then
+            node scripts/guard.mjs --health-only
+          else
+            node scripts/guard.mjs
+          fi
+
+  retire:
+    needs: window
+    if: needs.window.outputs.active == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions:
+      actions: write
+    steps:
+      - name: Disable this workflow after the end date
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --request PUT \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/meal-guard.yml/disable"
+          echo 'This workflow is disabled. No Supabase request was made after the deadline.' >> "$GITHUB_STEP_SUMMARY"

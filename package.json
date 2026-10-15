@@ -1,0 +1,13 @@
+{
+  "name": "meal-server-guard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Date-limited health checks and conditional recovery for the existing school meal project.",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test",
+    "check": "node scripts/guard.mjs",
+    "health": "node scripts/guard.mjs --health-only"
+  }
+}
